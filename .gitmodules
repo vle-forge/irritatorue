@@ -1,0 +1,3 @@
+[submodule "IrritatorCore/ThirdParty/irritator"]
+	path = IrritatorCore/ThirdParty/irritator
+	url = https://github.com/vle-forge/irritator.git
