@@ -1,0 +1,35 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "0.1",
+	"FriendlyName": "IrritatorUE",
+	"Description": "Discrete Event Simulation Engine",
+	"Category": "Simulation",
+	"CreatedBy": "Gauthier Quesnel",
+	"CreatedByURL": "https://github.com/vle-forge/irritator",
+	"DocsURL": "",
+	"MarketplaceURL": "",
+	"SupportURL": "",
+	"EnabledByDefault": true,
+	"CanContainContent": true,
+	"IsBetaVersion": true,
+	"IsExperimentalVersion": false,
+	"Installed": false,
+	"Modules": [
+		{
+			"Name": "IrritatorCore",
+			"Type": "Runtime",
+			"LoadingPhase": "Default"
+		},
+		{
+			"Name": "IrritatorRuntime",
+			"Type": "Runtime",
+			"LoadingPhase": "Default"
+		},
+		{
+			"Name": "IrritatorEditor",
+			"Type": "Editor",
+			"LoadingPhase": "Default"
+		}
+	]
+}
