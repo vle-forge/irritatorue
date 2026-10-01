@@ -6,6 +6,18 @@
 
 #include "Modules/ModuleManager.h"
 
+namespace irtue {
+
+struct version {
+    int major;
+    int minor;
+    int patch;
+};
+
+IRRITATORCORE_API version get_version() noexcept;
+
+} // namespace irtue
+
 class FIrritatorCoreModule : public IModuleInterface
 {
 public:

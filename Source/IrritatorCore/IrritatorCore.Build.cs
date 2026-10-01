@@ -28,10 +28,9 @@ public class IrritatorCore : ModuleRules
         PublicIncludePaths.Add(Path.Combine(ThirdPartyRoot, "external", "rapidjson", "include"));
         PublicIncludePaths.Add(Path.Combine(ThirdPartyRoot, "external", "fmt", "include"));
         PublicDefinitions.Add("FMT_HEADER_ONLY=1");
-        PublicDefinitions.Add("VERSION_MAJOR=0");
-        PublicDefinitions.Add("VERSION_MINOR=1");
-        PublicDefinitions.Add("VERSION_PATCH=0");
-        PublicDefinitions.Add("VERSION_TWEAK=0");
+        PrivateDefinitions.Add("VERSION_MAJOR=0");
+        PrivateDefinitions.Add("VERSION_MINOR=1");
+        PrivateDefinitions.Add("VERSION_PATCH=0");
 
 
         PublicDependencyModuleNames.AddRange(new string[]

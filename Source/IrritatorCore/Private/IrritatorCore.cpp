@@ -4,4 +4,14 @@
 
 #include "IrritatorCore.h"
 
+
 IMPLEMENT_MODULE(FIrritatorCoreModule, IrritatorCore)
+
+namespace irtue {
+
+version get_version() noexcept
+{
+    return { VERSION_MAJOR, VERSION_MINOR, VERSION_PATCH };
+}
+
+} // namespace irtue
