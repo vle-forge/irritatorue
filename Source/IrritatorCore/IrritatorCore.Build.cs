@@ -11,7 +11,8 @@ public class IrritatorCore : ModuleRules
         // ShadowVariableWarningLevel = WarningLevel.Off;
         CppCompileWarningSettings.ShadowVariableWarningLevel = WarningLevel.Off;
         bEnableExceptions = true;
-
+        bUseUnity = false;
+        
         string ThirdPartyRoot = Path.Combine(ModuleDirectory, "..", "ThirdParty", "irritator");
 
         string VendorLib = Path.Combine(ModuleDirectory, "Private", "vendor", "irritator-lib");
