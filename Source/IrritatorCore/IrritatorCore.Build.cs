@@ -31,7 +31,7 @@ public class IrritatorCore : ModuleRules
         PublicDefinitions.Add("VERSION_MAJOR=0");
         PublicDefinitions.Add("VERSION_MINOR=1");
         PublicDefinitions.Add("VERSION_PATCH=0");
-        PublicDefinitions.Add("VERSION_PATCH=0");
+        PublicDefinitions.Add("VERSION_TWEAK=0");
 
 
         PublicDependencyModuleNames.AddRange(new string[]
