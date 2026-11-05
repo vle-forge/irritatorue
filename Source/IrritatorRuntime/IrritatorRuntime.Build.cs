@@ -14,5 +14,11 @@ public class IrritatorRuntime : ModuleRules
 			"Engine",
 			"IrritatorCore"
 		});
+
+		// Projects: the tests find their files in the directory of the plug-in.
+		PrivateDependencyModuleNames.AddRange(new string[]
+		{
+			"Projects"
+		});
 	}
 }
