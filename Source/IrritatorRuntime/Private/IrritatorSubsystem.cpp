@@ -256,6 +256,36 @@ double UIrritatorSubsystem::GetObserverValue(const FString& Name) const
     return Session.observer_value(Session.find_observer(View.View()));
 }
 
+TArray<FString> UIrritatorSubsystem::GetInputNames() const
+{
+    TArray<FString> Names;
+
+    const int Count = Session.input_count();
+    Names.Reserve(Count);
+    for (int i = 0; i < Count; ++i)
+        Names.Add(ToFString(Session.input_name(i)));
+
+    return Names;
+}
+
+bool UIrritatorSubsystem::SendValue(const FString& Name, double Value)
+{
+    const FUtf8View View(Name);
+    const int       Index = Session.find_input(View.View());
+
+    if (Index < 0) {
+        UE_LOG(LogIrritator, Warning, TEXT("SendValue: unknown input '%s'"), *Name);
+        return false;
+    }
+
+    if (not Session.send_value(Index, Value)) {
+        UE_LOG(LogIrritator, Warning, TEXT("SendValue(%s) refused: the simulation is not running or too many values wait"), *Name);
+        return false;
+    }
+
+    return true;
+}
+
 FString UIrritatorSubsystem::GetLastError() const
 {
     // The background thread writes the error.

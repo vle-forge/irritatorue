@@ -36,6 +36,9 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FIrritatorRunFinished, bool, bSucces
  *   then OnSimulationFinished is broadcast in the game thread. During the run
  *   only the getters work.
  *
+ * The game acts on the simulation with SendValue(): a constant of the
+ * project, marked "configurable" in irritator, sends a new value.
+ *
  * The components of the projects are searched in Content/Irritator of the
  * project, in the directories added by AddComponentDirectory(), then in the
  * directories of the installation of irritator. Content/Irritator is staged
@@ -100,6 +103,20 @@ public:
     /// The value of the last observation, 0 if the name is unknown.
     UFUNCTION(BlueprintPure, Category = "Irritator")
     double GetObserverValue(const FString& Name) const;
+
+    /// The constants "configurable" in the project, named as in irritator.
+    UFUNCTION(BlueprintPure, Category = "Irritator")
+    TArray<FString> GetInputNames() const;
+
+    /**
+     * The constant Name sends Value at the current date of the simulation: in
+     * the next frame of Play(), or soon during RunToEnd().
+     *
+     * @return false if the input is unknown, if the simulation is not loaded
+     * or finished, or if too many values wait.
+     */
+    UFUNCTION(BlueprintCallable, Category = "Irritator")
+    bool SendValue(const FString& Name, double Value);
 
     UFUNCTION(BlueprintPure, Category = "Irritator")
     FString GetLastError() const;
