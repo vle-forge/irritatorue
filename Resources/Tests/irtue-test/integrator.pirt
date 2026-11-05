@@ -1,0 +1,22 @@
+{
+  "begin": 0.0,
+  "end": 10.0,
+  "component-type": "simple",
+  "component-path": "fixture",
+  "component-directory": "irtue-test",
+  "component-file": "integrator.irt",
+  "parameters": {
+    "global": []
+  },
+  "observations": {
+    "global": [{
+        "name": "x",
+        "models": [{
+            "name": "value",
+            "access": ["x"],
+            "color": [0.5, 0.5, 0.5, 1.0],
+            "type": "line"
+          }]
+      }]
+  }
+}
