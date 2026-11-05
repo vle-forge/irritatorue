@@ -6,7 +6,14 @@
   "component-directory": "irtue-test",
   "component-file": "integrator.irt",
   "parameters": {
-    "global": []
+    "global": [{
+        "name": "one",
+        "access": ["one"],
+        "parameter": {
+          "real": [1.0, 0.0, 0.0, 0.0],
+          "integer": [0, 0, 0, 0]
+        }
+      }]
   },
   "observations": {
     "global": [{
