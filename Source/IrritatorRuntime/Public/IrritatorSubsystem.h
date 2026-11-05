@@ -38,7 +38,8 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FIrritatorRunFinished, bool, bSucces
  *
  * The components of the projects are searched in Content/Irritator of the
  * project, in the directories added by AddComponentDirectory(), then in the
- * directories of the installation of irritator.
+ * directories of the installation of irritator. Content/Irritator is staged
+ * as is (outside the pak files) in the packaged game.
  */
 UCLASS()
 class IRRITATORRUNTIME_API UIrritatorSubsystem : public UTickableWorldSubsystem

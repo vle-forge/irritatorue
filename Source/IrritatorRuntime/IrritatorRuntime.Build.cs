@@ -20,5 +20,12 @@ public class IrritatorRuntime : ModuleRules
 		{
 			"Projects"
 		});
+
+		// The session reads the projects and the components with the file
+		// system, not from the pak files: Content/Irritator is staged as is.
+		if (Target.ProjectFile != null)
+		{
+			RuntimeDependencies.Add("$(ProjectDir)/Content/Irritator/...", StagedFileType.NonUFS);
+		}
 	}
 }
