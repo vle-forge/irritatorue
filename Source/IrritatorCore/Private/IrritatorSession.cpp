@@ -38,6 +38,11 @@ struct observed {
     irt::observer_id                                  id;
 };
 
+struct input {
+    irt::name_str  name;
+    irt::model_id  id;
+};
+
 bool is_directory(const irt::path& p) noexcept
 {
     std::error_code ec;
@@ -71,6 +76,11 @@ struct session::impl {
     std::unique_ptr<irt::simulation_player> player;
 
     irt::vector<observed> observers;
+    irt::vector<input>    inputs;
+
+    // Pushed by the thread of the game, applied by the thread that runs the
+    // simulation between two steps.
+    irt::command_queue commands;
 
     irt::log_history logs;
 
@@ -211,6 +221,54 @@ struct session::impl {
         return true;
     }
 
+    // The constants that are parameters of the project: the inputs of the
+    // game.
+    bool list_inputs() noexcept
+    {
+        inputs.clear();
+
+        const auto& names = pj->parameters.get<irt::name_str>();
+        const auto& mdls  = pj->parameters.get<irt::model_id>();
+
+        for (const auto id : pj->parameters) {
+            const auto  idx = irt::get_index(id);
+            const auto* mdl = pj->sim.models.try_to_get(mdls[idx]);
+
+            if (not mdl or mdl->type != irt::dynamics_type::constant)
+                continue;
+
+            auto* in = inputs.emplace_back();
+            if (not in)
+                return false;
+
+            in->name = names[idx];
+            in->id   = mdls[idx];
+        }
+
+        return true;
+    }
+
+    void discard_commands() noexcept
+    {
+        commands.consume([](const irt::command&) noexcept {});
+    }
+
+    // A command that fails is reported but does not stop the simulation.
+    bool apply_commands() noexcept
+    {
+        if (commands.empty())
+            return true;
+
+        if (auto ret = player->edit(
+              [&]() noexcept { return pj->apply_commands(commands); });
+            ret.has_error()) {
+            discard_commands();
+            return fail(ret.error());
+        }
+
+        return true;
+    }
+
     // The game never goes back in time: without keyframes the memory does not
     // grow with the length of the simulation.
     irt::status start() noexcept
@@ -268,6 +326,8 @@ bool session::load(std::string_view path_utf8) noexcept
     s.stop  = false;
     s.state = session_state::empty;
     s.observers.clear();
+    s.inputs.clear();
+    s.discard_commands();
     s.player.reset();
     s.pj.reset();
     s.mod.reset();
@@ -308,7 +368,7 @@ bool session::load(std::string_view path_utf8) noexcept
         return s.fail("out of memory");
     }
 
-    if (not s.list_observers())
+    if (not s.list_observers() or not s.list_inputs())
         return s.fail("out of memory");
 
     if (auto ret = s.start(); ret.has_error())
@@ -324,6 +384,7 @@ bool session::restart() noexcept
 
     m_impl->clear_error();
     m_impl->discard_logs();
+    m_impl->discard_commands();
     m_impl->stop = false;
 
     if (not m_impl->player)
@@ -354,11 +415,13 @@ bool session::advance_until(double                   target,
         return true;
 
     s.discard_logs();
+    const bool commands_ok = s.apply_commands();
+
     if (auto ret = s.player->advance_until(target, budget); ret.has_error())
         return s.fail_step(ret.error());
 
     s.sync_state();
-    return true;
+    return commands_ok;
 }
 
 bool session::run_to_end() noexcept
@@ -379,7 +442,12 @@ bool session::run_to_end() noexcept
     if (s.state == session_state::error)
         return s.fail("the simulation failed: restart it");
 
+    bool commands_ok = true;
+
     while (not s.player->finished() and not s.stop) {
+        if (not s.apply_commands())
+            commands_ok = false;
+
         if (auto ret = s.player->advance(run_slice); ret.has_error())
             return s.fail_step(ret.error());
 
@@ -390,7 +458,44 @@ bool session::run_to_end() noexcept
     // it too.
     s.stop = false;
     s.sync_state();
-    return true;
+    return commands_ok;
+}
+
+int session::input_count() const noexcept
+{
+    return m_impl ? static_cast<int>(m_impl->inputs.size()) : 0;
+}
+
+std::string_view session::input_name(int index) const noexcept
+{
+    if (not m_impl or index < 0 or index >= input_count())
+        return {};
+
+    return m_impl->inputs[index].name.sv();
+}
+
+int session::find_input(std::string_view name) const noexcept
+{
+    for (int i = 0, e = input_count(); i < e; ++i)
+        if (m_impl->inputs[i].name.sv() == name)
+            return i;
+
+    return -1;
+}
+
+bool session::send_value(int index, double value) noexcept
+{
+    if (not m_impl or index < 0 or index >= input_count())
+        return false;
+
+    const auto st = m_impl->state.load();
+    if (st != session_state::loaded and st != session_state::running)
+        return false;
+
+    return m_impl->commands.push(irt::command{
+      .type = irt::command_type::send_message,
+      .data{ .send_message{ .mdl_id = m_impl->inputs[index].id,
+                            .value  = value } } });
 }
 
 void session::request_stop() noexcept

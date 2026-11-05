@@ -27,8 +27,9 @@ enum class session_state {
  * of its simulation.
  *
  * The session is not thread safe: a thread calls @c run_to_end() while the
- * others only call @c request_stop(), @c state(), @c current_time() and @c
- * observer_value(). The other functions must wait for the end of the run.
+ * others only call @c request_stop(), @c send_value(), @c state(), @c
+ * current_time() and @c observer_value(). The other functions must wait for
+ * the end of the run.
  */
 class IRRITATORCORE_API session
 {
@@ -61,6 +62,9 @@ public:
      * Runs the events up to the date @c target (included) and moves the clock
      * to @c target. The call stops when @c budget is spent: the clock is then
      * before @c target and the next call goes on.
+     *
+     * @return false if the simulation fails, or if a value sent by @c
+     * send_value() is refused (the simulation goes on).
      */
     bool advance_until(double                   target,
                        std::chrono::nanoseconds budget) noexcept;
@@ -87,6 +91,23 @@ public:
 
     /// The value of the last observation of the model. Thread safe.
     double observer_value(int index) const noexcept;
+
+    /// The constant models that are parameters of the project (the models
+    /// "configurable" in irritator), named as the parameters.
+    int              input_count() const noexcept;
+    std::string_view input_name(int index) const noexcept;
+    int              find_input(std::string_view name) const noexcept;
+
+    /**
+     * The constant @c index sends @c value at the date of the simulation when
+     * the next @c advance_until() starts, or between two slices of @c
+     * run_to_end(). Thread safe for one thread of the game, during a @c
+     * run_to_end() too.
+     *
+     * @return false if the input does not exist, if the simulation is not
+     * loaded or finished, or if too many values wait.
+     */
+    bool send_value(int index, double value) noexcept;
 
     /// The message of the last error, with the messages of irritator.
     std::string_view last_error() const noexcept;
