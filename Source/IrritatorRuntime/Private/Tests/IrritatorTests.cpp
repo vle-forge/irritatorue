@@ -2,6 +2,7 @@
 // Version 1.0. (See accompanying file LICENSE_1_0.txt or copy at
 // http://www.boost.org/LICENSE_1_0.txt)
 
+#include "IrritatorObserverComponent.h"
 #include "IrritatorSession.h"
 #include "IrritatorSubsystem.h"
 
@@ -13,6 +14,7 @@
 #include "Misc/Paths.h"
 #include "Tests/AutomationCommon.h"
 
+#include <array>
 #include <chrono>
 #include <limits>
 #include <string>
@@ -24,8 +26,10 @@ namespace {
 constexpr auto TestFlags = EAutomationTestFlags::EditorContext | EAutomationTestFlags::ProductFilter;
 
 // The fixture: a constant 1 integrated from 0 to 10 (X(t) = t), observed as
-// "x/value". The project names the component directory "fixture", unknown
-// to the plug-in: the component is found by its sub directory.
+// "x/value". A cross of the threshold 5 on X sends -1 on its port "down" (1)
+// then 1 on its port "up" (0) to a counter "hits": x, cross and hits are the
+// outputs. The project names the component directory "fixture", unknown to
+// the plug-in: the component is found by its sub directory.
 FString FixtureDirectory()
 {
     const TSharedPtr<IPlugin> Plugin = IPluginManager::Get().FindPlugin(TEXT("IrritatorUE"));
@@ -171,6 +175,67 @@ bool FIrritatorSessionInputTest::RunTest(const FString& Parameters)
     return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FIrritatorSessionOutputTest, "Irritator.Session.Output", TestFlags)
+
+bool FIrritatorSessionOutputTest::RunTest(const FString& Parameters)
+{
+    using namespace std::chrono_literals;
+
+    irtue::session Session;
+    if (not LoadFixture(*this, Session))
+        return false;
+
+    TestEqual(TEXT("outputs"), Session.output_count(), 3);
+    const int X     = Session.find_output("x");
+    const int Cross = Session.find_output("cross");
+    const int Hits  = Session.find_output("hits");
+    TestTrue(TEXT("output names"), X >= 0 and Cross >= 0 and Hits >= 0);
+    TestEqual(TEXT("unknown output"), Session.find_output("one"), -1);
+    TestFalse(TEXT("watch an unknown output"), Session.watch_output(99, true));
+
+    std::array<irtue::output_event, 16> Events{};
+
+    // Only the watched outputs: the 1000 quanta of x are not sent.
+    TestTrue(TEXT("watch cross"), Session.watch_output(Cross, true));
+    TestTrue(TEXT("watch hits"), Session.watch_output(Hits, true));
+    TestTrue(TEXT("advance to 10"), Session.advance_until(10.0, 1s));
+
+    const auto N = Session.take_events(Events);
+    if (not TestEqual(TEXT("events"), static_cast<int>(N), 3))
+        return false;
+
+    TestEqual(TEXT("down: output"), Events[0].output, Cross);
+    TestEqual(TEXT("down: port"), Events[0].port, 1);
+    TestEqual(TEXT("down: value"), Events[0].value, -1.0);
+    TestEqual(TEXT("down: time"), Events[0].time, 0.0, 0.02);
+
+    TestEqual(TEXT("up: output"), Events[1].output, Cross);
+    TestEqual(TEXT("up: port"), Events[1].port, 0);
+    TestEqual(TEXT("up: value"), Events[1].value, 1.0);
+    TestEqual(TEXT("up: time"), Events[1].time, 5.0, 0.02);
+
+    TestEqual(TEXT("hits: output"), Events[2].output, Hits);
+    TestEqual(TEXT("hits: port"), Events[2].port, -1);
+    TestEqual(TEXT("hits: value"), Events[2].value, 1.0);
+    TestEqual(TEXT("hits: time"), Events[2].time, Events[1].time);
+
+    TestEqual(TEXT("taken"), static_cast<int>(Session.take_events(Events)), 0);
+
+    // Beyond the capacity the oldest events are dropped.
+    TestTrue(TEXT("restart"), Session.restart());
+    TestTrue(TEXT("unwatch cross"), Session.watch_output(Cross, false));
+    TestTrue(TEXT("unwatch hits"), Session.watch_output(Hits, false));
+    TestTrue(TEXT("watch x"), Session.watch_output(X, true));
+    Session.set_event_capacity(4);
+    TestTrue(TEXT("advance x to 10"), Session.advance_until(10.0, 1s));
+
+    TestEqual(TEXT("events of x"), static_cast<int>(Session.take_events(Events)), 4);
+    TestTrue(TEXT("dropped"), Session.dropped_events() > 0);
+    TestTrue(TEXT("the last events"), Events[0].time > 9.9 and Events[3].output == X);
+
+    return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FIrritatorSubsystemTest, "Irritator.Subsystem", TestFlags)
 
 bool FIrritatorSubsystemTest::RunTest(const FString& Parameters)
@@ -190,6 +255,17 @@ bool FIrritatorSubsystemTest::RunTest(const FString& Parameters)
         return false;
 
     TestTrue(TEXT("observer names"), Sub->GetObserverNames() == TArray<FString>{ TEXT("x/value") });
+    TestEqual(TEXT("output names"), Sub->GetOutputNames().Num(), 3);
+
+    // Outside an actor: registered by hand.
+    UIrritatorObserverComponent* Cross = NewObject<UIrritatorObserverComponent>();
+    UIrritatorObserverComponent* Nope  = NewObject<UIrritatorObserverComponent>();
+    Cross->OutputName = TEXT("cross");
+    Nope->OutputName  = TEXT("nope");
+    Sub->RegisterObserver(Cross);
+    Sub->RegisterObserver(Nope);
+    TestTrue(TEXT("connected"), Cross->IsConnected());
+    TestFalse(TEXT("unknown output"), Nope->IsConnected());
 
     // The world is not ticked: the frames are simulated by hand.
     Sub->TimeScale = 2.0;
@@ -216,6 +292,11 @@ bool FIrritatorSubsystemTest::RunTest(const FString& Parameters)
     TestEqual(TEXT("time after 1 more s"), Sub->GetSimulationTime(), 4.0, 1e-6);
     TestEqual(TEXT("x with the new slope"), Sub->GetObserverValue(TEXT("x/value")), 8.0, 0.05);
 
+    // X = 2 + 3 (t - 2) crosses 5 at t = 3: down at 0, then up.
+    TestEqual(TEXT("cross events"), Cross->GetEventCount(), 2);
+    TestEqual(TEXT("cross up"), Cross->GetLastValue(), 1.0);
+    TestEqual(TEXT("cross time"), Cross->GetLastEventTime(), 3.0, 0.02);
+
     TestTrue(TEXT("run to end"), Sub->RunToEnd());
 
     for (int i = 0; i < 1000 and Sub->IsRunningInBackground(); ++i)
@@ -225,11 +306,17 @@ bool FIrritatorSubsystemTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("finished"), Sub->GetState() == EIrritatorState::Finished);
     TestEqual(TEXT("x at end"), Sub->GetObserverValue(TEXT("x/value")), 8.0 + 3.0 * 6.0, 0.05);
 
-    TestTrue(TEXT("restart"), Sub->Restart());
-    TestEqual(TEXT("time after restart"), Sub->GetSimulationTime(), 0.0);
-
     // The notification of the end of the run is queued in the game thread.
     FTaskGraphInterface::Get().ProcessThreadUntilIdle(ENamedThreads::GameThread);
+    TestEqual(TEXT("no more cross events"), Cross->GetEventCount(), 2);
+
+    TestTrue(TEXT("restart"), Sub->Restart());
+    TestEqual(TEXT("time after restart"), Sub->GetSimulationTime(), 0.0);
+    TestEqual(TEXT("events reset"), Cross->GetEventCount(), 0);
+
+    Sub->UnregisterObserver(Cross);
+    Sub->UnregisterObserver(Nope);
+    TestFalse(TEXT("unregistered"), Cross->IsConnected());
 
     return true;
 }
