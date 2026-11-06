@@ -25,6 +25,8 @@ enum class EIrritatorState : uint8
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FIrritatorRunFinished, bool, bSuccess);
 
+class UIrritatorObserverComponent;
+
 /**
  * The simulation of an irritator project in a world.
  *
@@ -37,7 +39,10 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FIrritatorRunFinished, bool, bSucces
  *   only the getters work.
  *
  * The game acts on the simulation with SendValue(): a constant of the
- * project, marked "configurable" in irritator, sends a new value.
+ * project, marked "configurable" in irritator, sends a new value. The
+ * simulation acts on the game with the events of its outputs, the models
+ * marked "observable" in irritator: an UIrritatorObserverComponent receives
+ * the events of one output in the tick of the world.
  *
  * The components of the projects are searched in Content/Irritator of the
  * project, in the directories added by AddComponentDirectory(), then in the
@@ -118,8 +123,28 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Irritator")
     bool SendValue(const FString& Name, double Value);
 
+    /// The models "observable" in the project, named as in irritator.
+    UFUNCTION(BlueprintPure, Category = "Irritator")
+    TArray<FString> GetOutputNames() const;
+
+    /// The events dropped because too many waited (see SetEventCapacity()).
+    UFUNCTION(BlueprintPure, Category = "Irritator")
+    int64 GetDroppedEventCount() const;
+
+    /// The events waiting for the next tick, 65536 by default: beyond, the
+    /// oldest are dropped. Only a RunToEnd() can produce so many.
+    UFUNCTION(BlueprintCallable, Category = "Irritator")
+    void SetEventCapacity(int32 Capacity);
+
     UFUNCTION(BlueprintPure, Category = "Irritator")
     FString GetLastError() const;
+
+    /// Called by the components: the name is resolved by each load.
+    void RegisterObserver(UIrritatorObserverComponent* Observer);
+    void UnregisterObserver(UIrritatorObserverComponent* Observer);
+
+    /// Broadcasts the events waiting to their components. Called by Tick().
+    void DispatchEvents();
 
     UPROPERTY(BlueprintAssignable, Category = "Irritator")
     FIrritatorRunFinished OnSimulationFinished;
@@ -134,9 +159,21 @@ public:
 private:
     bool RefuseIfRunning(const TCHAR* Command) const;
 
+    /// Resolves the names of the components and watches their outputs.
+    void ConnectObservers();
+    void ResetObservers();
+
     irtue::session    Session; // by value: the session's memory is only touched inside IrritatorCore
     TFuture<void>     RunFuture;
     std::atomic<bool> bBackgroundRun{ false };
     double            PlayTarget = 0.0;
     bool              bPlaying   = false;
+
+    TArray<TWeakObjectPtr<UIrritatorObserverComponent>>         Observers;
+    TArray<TArray<TWeakObjectPtr<UIrritatorObserverComponent>>> ObserversByOutput;
+    TArray<irtue::output_event>                                 EventBuffer;
+
+    /// Grows at each load and restart: the events taken before belong to
+    /// the previous run.
+    uint64 RunGeneration = 0;
 };

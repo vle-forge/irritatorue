@@ -4,9 +4,13 @@
 
 #include "IrritatorSubsystem.h"
 
+#include "IrritatorObserverComponent.h"
+
 #include "Async/Async.h"
+#include "GameFramework/Actor.h"
 #include "Misc/Paths.h"
 
+#include <span>
 #include <string_view>
 
 DEFINE_LOG_CATEGORY_STATIC(LogIrritator, Log, All);
@@ -73,24 +77,130 @@ void UIrritatorSubsystem::Tick(float DeltaTime)
 {
     Super::Tick(DeltaTime);
 
-    if (not bPlaying or IsRunningInBackground())
-        return;
+    if (bPlaying and not IsRunningInBackground()) {
+        const auto State = Session.state();
+        if (State != irtue::session_state::loaded and State != irtue::session_state::running) {
+            bPlaying = false;
+        } else {
+            // An absolute target: a frame without enough budget is caught up
+            // by the next ones instead of slowing down the simulation for
+            // ever.
+            PlayTarget += static_cast<double>(DeltaTime) * TimeScale;
 
-    const auto State = Session.state();
-    if (State != irtue::session_state::loaded and State != irtue::session_state::running) {
-        bPlaying = false;
-        return;
+            const auto Budget = std::chrono::microseconds(static_cast<int64>(FrameBudgetMs * 1000.0f));
+            if (not Session.advance_until(PlayTarget, Budget)) {
+                bPlaying = false;
+                UE_LOG(LogIrritator, Warning, TEXT("Simulation step failed: %s"), *GetLastError());
+            }
+        }
     }
 
-    // An absolute target: a frame without enough budget is caught up by the
-    // next ones instead of slowing down the simulation for ever.
-    PlayTarget += static_cast<double>(DeltaTime) * TimeScale;
+    // Also during RunToEnd(): the background thread fills the events.
+    DispatchEvents();
+}
 
-    const auto Budget = std::chrono::microseconds(static_cast<int64>(FrameBudgetMs * 1000.0f));
-    if (not Session.advance_until(PlayTarget, Budget)) {
-        bPlaying = false;
-        UE_LOG(LogIrritator, Warning, TEXT("Simulation step failed: %s"), *GetLastError());
+void UIrritatorSubsystem::RegisterObserver(UIrritatorObserverComponent* Observer)
+{
+    if (Observer) {
+        Observers.AddUnique(Observer);
+        ConnectObservers();
     }
+}
+
+void UIrritatorSubsystem::UnregisterObserver(UIrritatorObserverComponent* Observer)
+{
+    if (Observers.Remove(Observer) > 0) {
+        Observer->OutputIndex = -1;
+        ConnectObservers();
+    }
+}
+
+void UIrritatorSubsystem::ConnectObservers()
+{
+    Observers.RemoveAll([](const auto& Weak) { return not Weak.IsValid(); });
+
+    const int Count = Session.output_count();
+    ObserversByOutput.Reset();
+    ObserversByOutput.SetNum(Count);
+
+    for (const auto& Weak : Observers) {
+        UIrritatorObserverComponent* Observer = Weak.Get();
+        const FUtf8View              Name(Observer->OutputName);
+
+        Observer->OutputIndex = Session.find_output(Name.View());
+        if (Observer->OutputIndex >= 0)
+            ObserversByOutput[Observer->OutputIndex].Add(Weak);
+        else if (Count > 0)
+            UE_LOG(LogIrritator, Warning, TEXT("Observer of %s: unknown output '%s'"),
+                   *GetNameSafe(Observer->GetOwner()), *Observer->OutputName);
+    }
+
+    for (int i = 0; i < Count; ++i)
+        (void)Session.watch_output(i, not ObserversByOutput[i].IsEmpty());
+}
+
+void UIrritatorSubsystem::ResetObservers()
+{
+    ++RunGeneration;
+
+    for (const auto& Weak : Observers)
+        if (UIrritatorObserverComponent* Observer = Weak.Get())
+            Observer->ResetEvents();
+}
+
+void UIrritatorSubsystem::DispatchEvents()
+{
+    if (EventBuffer.Num() == 0)
+        EventBuffer.SetNumUninitialized(1024);
+
+    const uint64 Generation = RunGeneration;
+
+    for (;;) {
+        const std::size_t Count = Session.take_events(
+          std::span<irtue::output_event>(EventBuffer.GetData(), static_cast<std::size_t>(EventBuffer.Num())));
+
+        for (std::size_t i = 0; i < Count; ++i) {
+            const irtue::output_event& Event = EventBuffer[static_cast<int32>(i)];
+
+            // A listener can load or restart the project, or add and remove
+            // components: the lists are read again for each event.
+            if (Generation != RunGeneration)
+                return;
+
+            if (not ObserversByOutput.IsValidIndex(Event.output))
+                continue;
+
+            const auto& List = ObserversByOutput[Event.output];
+            for (int32 j = 0; j < List.Num(); ++j)
+                if (UIrritatorObserverComponent* Observer = List[j].Get())
+                    Observer->Receive(Event.time, Event.port, Event.value);
+        }
+
+        if (Count < static_cast<std::size_t>(EventBuffer.Num()))
+            return;
+    }
+}
+
+TArray<FString> UIrritatorSubsystem::GetOutputNames() const
+{
+    TArray<FString> Names;
+
+    const int Count = Session.output_count();
+    Names.Reserve(Count);
+    for (int i = 0; i < Count; ++i)
+        Names.Add(ToFString(Session.output_name(i)));
+
+    return Names;
+}
+
+int64 UIrritatorSubsystem::GetDroppedEventCount() const
+{
+    return static_cast<int64>(Session.dropped_events());
+}
+
+void UIrritatorSubsystem::SetEventCapacity(int32 Capacity)
+{
+    Session.set_event_capacity(static_cast<std::size_t>(FMath::Max(Capacity, 1)));
 }
 
 bool UIrritatorSubsystem::RefuseIfRunning(const TCHAR* Command) const
@@ -122,11 +232,15 @@ bool UIrritatorSubsystem::LoadProject(const FString& FilePath)
     const FString Full = FPaths::IsRelative(FilePath) ? ContentDirectory() / FilePath : FilePath;
     const FUtf8View Path(Full);
 
+    ResetObservers();
+
     if (not Session.load(Path.View())) {
+        ConnectObservers();
         UE_LOG(LogIrritator, Warning, TEXT("LoadProject(%s) failed: %s"), *Full, *GetLastError());
         return false;
     }
 
+    ConnectObservers();
     PlayTarget = Session.current_time();
     return true;
 }
@@ -149,6 +263,8 @@ bool UIrritatorSubsystem::Restart()
 {
     if (RefuseIfRunning(TEXT("Restart")))
         return false;
+
+    ResetObservers();
 
     if (not Session.restart()) {
         bPlaying = false;
@@ -186,6 +302,9 @@ bool UIrritatorSubsystem::RunToEnd()
             if (UIrritatorSubsystem* Self = Weak.Get()) {
                 if (not bOk)
                     UE_LOG(LogIrritator, Warning, TEXT("RunToEnd failed: %s"), *Error);
+
+                // The last events before the end.
+                Self->DispatchEvents();
                 Self->OnSimulationFinished.Broadcast(bOk);
             }
         });
