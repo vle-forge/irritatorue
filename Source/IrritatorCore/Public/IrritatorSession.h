@@ -67,8 +67,25 @@ public:
     /// Reads the project and initializes its simulation at its begin date.
     bool load(std::string_view path_utf8) noexcept;
 
-    /// Starts the simulation of the loaded project again from its begin date.
+    /// Starts a new game: the simulation of the loaded project starts again
+    /// from its begin date, and the journal of the values sent is cleared.
     bool restart() noexcept;
+
+    /**
+     * Builds the simulation of the loaded project again and replays the game:
+     * the values sent (the journal) are sent again at the same dates while
+     * the simulation advances. A value sent during the replay starts a new
+     * game from there: the values after it are forgotten.
+     */
+    bool replay() noexcept;
+
+    /// Writes the journal of the values sent in a json file (a @c .irj file,
+    /// readable by the user interface of irritator).
+    bool save_journal(std::string_view path_utf8) noexcept;
+
+    /// Reads a journal written by @c save_journal() for the loaded project,
+    /// then replays it (see @c replay()).
+    bool load_journal(std::string_view path_utf8) noexcept;
 
     /**
      * Runs the events up to the date @c target (included) and moves the clock

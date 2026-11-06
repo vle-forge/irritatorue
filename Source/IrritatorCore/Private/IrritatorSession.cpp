@@ -82,6 +82,7 @@ struct session::impl {
     // project and the project references the components of the modeling.
     std::unique_ptr<irt::modeling>          mod;
     std::unique_ptr<irt::project>           pj;
+    std::unique_ptr<irt::command_journal>   journal;
     std::unique_ptr<irt::simulation_player> player;
 
     irt::vector<observed> observers;
@@ -298,6 +299,29 @@ struct session::impl {
         return true;
     }
 
+    // After a new build of the simulation the identifiers may change: the
+    // watches of the game are kept by name.
+    bool relist() noexcept
+    {
+        irt::vector<irt::name_str> wanted;
+        std::scoped_lock           lock(events_mutex);
+
+        for (const auto& out : outputs)
+            if (out.wanted and not wanted.emplace_back(out.name))
+                return false;
+
+        pj->sim.unwatch_all();
+
+        if (not list_observers() or not list_inputs() or not list_outputs())
+            return false;
+
+        for (auto& out : outputs)
+            out.wanted = std::ranges::any_of(
+              wanted, [&](const auto& n) { return n.sv() == out.name.sv(); });
+
+        return true;
+    }
+
     void discard_events() noexcept
     {
         std::scoped_lock lock(events_mutex);
@@ -385,8 +409,9 @@ struct session::impl {
         if (commands.empty())
             return true;
 
-        if (auto ret = player->edit(
-              [&]() noexcept { return pj->apply_commands(commands); });
+        if (auto ret = player->edit([&]() noexcept {
+                return journal->apply(commands, player->step());
+            });
             ret.has_error()) {
             discard_commands();
             return fail(ret.error());
@@ -463,6 +488,7 @@ bool session::load(std::string_view path_utf8) noexcept
     }
     s.dropped = 0;
     s.player.reset();
+    s.journal.reset();
     s.pj.reset();
     s.mod.reset();
 
@@ -479,8 +505,9 @@ bool session::load(std::string_view path_utf8) noexcept
     }
 
     try {
-        s.mod = std::make_unique<irt::modeling>();
-        s.pj  = std::make_unique<irt::project>();
+        s.mod     = std::make_unique<irt::modeling>();
+        s.pj      = std::make_unique<irt::project>();
+        s.journal = std::make_unique<irt::command_journal>(*s.pj);
     } catch (...) {
         return s.fail("out of memory");
     }
@@ -501,6 +528,8 @@ bool session::load(std::string_view path_utf8) noexcept
     } catch (...) {
         return s.fail("out of memory");
     }
+
+    s.player->set_edition_replay(s.journal.get());
 
     bool listed = false;
     {
@@ -530,12 +559,100 @@ bool session::restart() noexcept
     if (not m_impl->player)
         return m_impl->fail("no project loaded");
 
+    m_impl->journal->clear();
+
     if (auto ret = m_impl->start(); ret.has_error())
         return m_impl->fail_step(ret.error());
 
     // After the start: the events of the previous run are not for the game.
     m_impl->discard_events();
     return true;
+}
+
+bool session::replay() noexcept
+{
+    if (not m_impl)
+        return false;
+
+    auto& s = *m_impl;
+    s.clear_error();
+    s.discard_logs();
+    s.discard_commands();
+    s.stop = false;
+
+    if (not s.player)
+        return s.fail("no project loaded");
+
+    // A new build: the editions of the game are not in the simulation any
+    // more, the journal does them again.
+    if (auto ret = s.pj->simulation_init(*s.mod); ret.has_error()) {
+        s.state = session_state::error;
+        return s.fail(ret.error());
+    }
+
+    if (not s.relist())
+        return s.fail("out of memory");
+
+    if (auto ret = s.start(); ret.has_error())
+        return s.fail_step(ret.error());
+
+    s.discard_events();
+    return true;
+}
+
+bool session::save_journal(std::string_view path_utf8) noexcept
+{
+    if (not m_impl)
+        return false;
+
+    auto& s = *m_impl;
+    s.clear_error();
+
+    if (not s.player)
+        return s.fail("no project loaded");
+
+    if (path_utf8.size() >= irt::path::capacity())
+        return s.fail("path too long");
+
+    auto file = irt::file::open(
+      irt::path(path_utf8), irt::file_mode(irt::file_open_options::write));
+    if (not file.has_value())
+        return s.fail(file.error());
+
+    if (auto ret = irt::save_journal(*s.pj, *s.journal, *file,
+                                     irt::json_pretty_print::indent_2);
+        ret.has_error())
+        return s.fail(ret.error());
+
+    return true;
+}
+
+bool session::load_journal(std::string_view path_utf8) noexcept
+{
+    if (not m_impl)
+        return false;
+
+    auto& s = *m_impl;
+    s.clear_error();
+
+    if (not s.player)
+        return s.fail("no project loaded");
+
+    if (path_utf8.size() >= irt::path::capacity())
+        return s.fail("path too long");
+
+    auto file = irt::file::open(
+      irt::path(path_utf8), irt::file_mode(irt::file_open_options::read));
+    if (not file.has_value())
+        return s.fail(file.error());
+
+    if (auto ret = irt::load_journal(*s.pj, *s.journal, *file);
+        ret.has_error()) {
+        s.journal->clear();
+        return s.fail(ret.error());
+    }
+
+    return replay();
 }
 
 bool session::advance_until(double                   target,
