@@ -8,6 +8,7 @@
 
 #include "Async/Async.h"
 #include "GameFramework/Actor.h"
+#include "HAL/FileManager.h"
 #include "Misc/Paths.h"
 
 #include <span>
@@ -43,6 +44,13 @@ FString ToFString(const std::string_view Str)
 FString ContentDirectory()
 {
     return FPaths::ConvertRelativePathToFull(FPaths::ProjectContentDir() / TEXT("Irritator"));
+}
+
+FString JournalPath(const FString& FilePath)
+{
+    return FPaths::IsRelative(FilePath)
+             ? FPaths::ConvertRelativePathToFull(FPaths::ProjectSavedDir() / TEXT("Irritator") / FilePath)
+             : FilePath;
 }
 
 } // namespace
@@ -269,6 +277,64 @@ bool UIrritatorSubsystem::Restart()
     if (not Session.restart()) {
         bPlaying = false;
         UE_LOG(LogIrritator, Warning, TEXT("Restart failed: %s"), *GetLastError());
+        return false;
+    }
+
+    PlayTarget = Session.current_time();
+    return true;
+}
+
+bool UIrritatorSubsystem::Replay()
+{
+    if (RefuseIfRunning(TEXT("Replay")))
+        return false;
+
+    ResetObservers();
+    const bool bOk = Session.replay();
+    ConnectObservers();
+
+    if (not bOk) {
+        bPlaying = false;
+        UE_LOG(LogIrritator, Warning, TEXT("Replay failed: %s"), *GetLastError());
+        return false;
+    }
+
+    PlayTarget = Session.current_time();
+    return true;
+}
+
+bool UIrritatorSubsystem::SaveJournal(const FString& FilePath)
+{
+    if (RefuseIfRunning(TEXT("SaveJournal")))
+        return false;
+
+    const FString Full = JournalPath(FilePath);
+    IFileManager::Get().MakeDirectory(*FPaths::GetPath(Full), true);
+
+    const FUtf8View Path(Full);
+    if (not Session.save_journal(Path.View())) {
+        UE_LOG(LogIrritator, Warning, TEXT("SaveJournal(%s) failed: %s"), *Full, *GetLastError());
+        return false;
+    }
+
+    return true;
+}
+
+bool UIrritatorSubsystem::LoadJournal(const FString& FilePath)
+{
+    if (RefuseIfRunning(TEXT("LoadJournal")))
+        return false;
+
+    const FString   Full = JournalPath(FilePath);
+    const FUtf8View Path(Full);
+
+    ResetObservers();
+    const bool bOk = Session.load_journal(Path.View());
+    ConnectObservers();
+
+    if (not bOk) {
+        bPlaying = false;
+        UE_LOG(LogIrritator, Warning, TEXT("LoadJournal(%s) failed: %s"), *Full, *GetLastError());
         return false;
     }
 

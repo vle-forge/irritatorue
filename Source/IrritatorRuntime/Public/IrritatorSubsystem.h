@@ -77,6 +77,24 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Irritator")
     bool Restart();
 
+    /**
+     * Builds the simulation again and replays the game: the values sent by
+     * SendValue() are sent again at the same dates while the simulation
+     * advances (Play() or RunToEnd()). A value sent during the replay starts
+     * a new game from there. Restart() starts a new game.
+     */
+    UFUNCTION(BlueprintCallable, Category = "Irritator")
+    bool Replay();
+
+    /// Writes the values sent in a journal (a .irj file, readable by the
+    /// user interface of irritator). A relative path is in Saved/Irritator.
+    UFUNCTION(BlueprintCallable, Category = "Irritator")
+    bool SaveJournal(const FString& FilePath);
+
+    /// Reads a journal of the loaded project, then replays it (see Replay()).
+    UFUNCTION(BlueprintCallable, Category = "Irritator")
+    bool LoadJournal(const FString& FilePath);
+
     UFUNCTION(BlueprintCallable, Category = "Irritator")
     bool RunToEnd();
 
