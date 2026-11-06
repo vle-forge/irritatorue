@@ -45,6 +45,10 @@ Sub->Play();
 - **Values**: the observers of the project give the value of a continuous
   model, an integrator for example: `GetObserverValue("observer/model")`
   (`GetObserverNames()`).
+- **Replay**: the values sent are recorded with their date. `Replay()` builds
+  the simulation again and sends them again at the same dates; `Restart()`
+  starts a new game. `SaveJournal()` writes them in a `.irj` file, that
+  `LoadJournal()` replays and that the user interface of irritator reads too.
 
 The projects and their components are searched in `Content/Irritator` of the
 Unreal project, in the directories added by `AddComponentDirectory()`, then in
