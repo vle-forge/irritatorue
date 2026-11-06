@@ -9,7 +9,10 @@
 #include "HAL/Platform.h"
 
 #include <chrono>
+#include <cstddef>
+#include <cstdint>
 #include <memory>
+#include <span>
 #include <string_view>
 
 namespace irtue {
@@ -22,14 +25,23 @@ enum class session_state {
     error     ///< A step failed: load or restart the project.
 };
 
+/// An event of an output: a message of the model, or a new value of a model
+/// without output port (a counter).
+struct output_event {
+    double time;
+    int    output; ///< The index of the output, see @c find_output().
+    int    port;   ///< The output port of the model, -1 for a new value.
+    double value;  ///< The first real of the message, or the new value.
+};
+
 /**
  * A project of irritator (a @c .pirt file and its components) and the player
  * of its simulation.
  *
  * The session is not thread safe: a thread calls @c run_to_end() while the
- * others only call @c request_stop(), @c send_value(), @c state(), @c
- * current_time() and @c observer_value(). The other functions must wait for
- * the end of the run.
+ * others only call @c request_stop(), @c send_value(), @c watch_output(), @c
+ * take_events(), @c state(), @c current_time() and @c observer_value(). The
+ * other functions must wait for the end of the run.
  */
 class IRRITATORCORE_API session
 {
@@ -108,6 +120,33 @@ public:
      * loaded or finished, or if too many values wait.
      */
     bool send_value(int index, double value) noexcept;
+
+    /// The models "observable" in irritator, named as in the project: the
+    /// outputs of the game.
+    int              output_count() const noexcept;
+    std::string_view output_name(int index) const noexcept;
+    int              find_output(std::string_view name) const noexcept;
+
+    /**
+     * The events of the output @c index are kept from the next step, until
+     * @c watch_output(index, false). An output not watched costs nothing to
+     * the simulation. Thread safe. The watches end with the next @c load().
+     */
+    bool watch_output(int index, bool enable) noexcept;
+
+    /**
+     * Moves the oldest events of the watched outputs into @c out, in the order
+     * of the simulation. Thread safe.
+     *
+     * @return The number of events written in @c out: call it again while it
+     * fills @c out.
+     */
+    std::size_t take_events(std::span<output_event> out) noexcept;
+
+    /// The events not taken are limited to @c capacity (65536 by default):
+    /// beyond, the oldest are dropped and counted by @c dropped_events().
+    void          set_event_capacity(std::size_t capacity) noexcept;
+    std::uint64_t dropped_events() const noexcept;
 
     /// The message of the last error, with the messages of irritator.
     std::string_view last_error() const noexcept;

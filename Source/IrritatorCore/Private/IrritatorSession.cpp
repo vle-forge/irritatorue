@@ -17,8 +17,10 @@
 #include <irritator/simulation-player.hpp>
 #include <irritator/thread.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <filesystem>
+#include <mutex>
 #include <string>
 #include <system_error>
 
@@ -41,6 +43,13 @@ struct observed {
 struct input {
     irt::name_str  name;
     irt::model_id  id;
+};
+
+struct output {
+    irt::name_str name;
+    irt::model_id id;
+    bool          wanted  = false; ///< The game asks it, see events_mutex.
+    bool          watched = false; ///< Thread of the simulation only.
 };
 
 bool is_directory(const irt::path& p) noexcept
@@ -77,6 +86,17 @@ struct session::impl {
 
     irt::vector<observed> observers;
     irt::vector<input>    inputs;
+    irt::vector<output>   outputs;
+
+    irt::table<irt::model_id, int> output_of;
+
+    // Filled by the thread of the simulation between two steps, taken by the
+    // game. The mutex guards the events and the wanted watches.
+    std::mutex                 events_mutex;
+    irt::vector<output_event>  events;
+    std::size_t                events_head    = 0; ///< first event not taken
+    std::size_t                event_capacity = 65536;
+    std::atomic<std::uint64_t> dropped{ 0 };
 
     // Pushed by the thread of the game, applied by the thread that runs the
     // simulation between two steps.
@@ -248,6 +268,112 @@ struct session::impl {
         return true;
     }
 
+    // The observables of the project: the outputs of the game.
+    bool list_outputs() noexcept
+    {
+        outputs.clear();
+        output_of.data.clear();
+
+        const auto& names = pj->observables.get<irt::name_str>();
+        const auto& mdls  = pj->observables.get<irt::model_id>();
+
+        for (const auto id : pj->observables) {
+            const auto idx = irt::get_index(id);
+            if (not pj->sim.models.try_to_get(mdls[idx]))
+                continue;
+
+            auto* out = outputs.emplace_back();
+            if (not out)
+                return false;
+
+            out->name = names[idx];
+            out->id   = mdls[idx];
+
+            if (not output_of.data.emplace_back(
+                  out->id, static_cast<int>(outputs.size()) - 1))
+                return false;
+        }
+
+        output_of.sort();
+        return true;
+    }
+
+    void discard_events() noexcept
+    {
+        std::scoped_lock lock(events_mutex);
+        events.clear();
+        events_head = 0;
+        pj->sim.clear_watched_events();
+    }
+
+    // Before a step, in the thread of the simulation.
+    bool sync_watches() noexcept
+    {
+        std::scoped_lock lock(events_mutex);
+
+        for (auto& out : outputs) {
+            if (out.wanted == out.watched)
+                continue;
+
+            if (out.wanted) {
+                if (auto ret = pj->sim.watch(out.id); ret.has_error()) {
+                    out.wanted = false;
+                    return fail(ret.error());
+                }
+            } else {
+                pj->sim.unwatch(out.id);
+            }
+
+            out.watched = out.wanted;
+        }
+
+        return true;
+    }
+
+    // After a step, in the thread of the simulation.
+    void publish_events() noexcept
+    {
+        const auto ev = pj->sim.watched_events();
+        if (ev.empty())
+            return;
+
+        std::scoped_lock lock(events_mutex);
+
+        for (const auto& e : ev) {
+            const auto* index = output_of.get(e.mdl);
+            if (not index or not outputs[*index].wanted)
+                continue;
+
+            if (events.size() - events_head >= event_capacity) {
+                ++events_head;
+                ++dropped;
+            }
+
+            // Without memory the event is dropped: the game goes on.
+            if (not events.emplace_back(output_event{ .time   = e.t,
+                                                      .output = *index,
+                                                      .port   = e.port,
+                                                      .value  = e.value }))
+                ++dropped;
+        }
+
+        pj->sim.clear_watched_events();
+        compact_events();
+    }
+
+    // The taken and dropped events are removed once they are the half of the
+    // buffer: the cost of the copy is shared by the events.
+    void compact_events() noexcept
+    {
+        if (events_head == 0 or events_head * 2 < events.size())
+            return;
+
+        const auto first = events.begin() + events_head;
+        std::copy(first, events.end(), events.begin());
+        (void)events.resize(events.size() - events_head);
+        events_head = 0;
+    }
+
     void discard_commands() noexcept
     {
         commands.consume([](const irt::command&) noexcept {});
@@ -328,6 +454,14 @@ bool session::load(std::string_view path_utf8) noexcept
     s.observers.clear();
     s.inputs.clear();
     s.discard_commands();
+    {
+        std::scoped_lock lock(s.events_mutex);
+        s.outputs.clear();
+        s.output_of.data.clear();
+        s.events.clear();
+        s.events_head = 0;
+    }
+    s.dropped = 0;
     s.player.reset();
     s.pj.reset();
     s.mod.reset();
@@ -368,7 +502,13 @@ bool session::load(std::string_view path_utf8) noexcept
         return s.fail("out of memory");
     }
 
-    if (not s.list_observers() or not s.list_inputs())
+    bool listed = false;
+    {
+        std::scoped_lock lock(s.events_mutex);
+        listed = s.list_observers() and s.list_inputs() and s.list_outputs();
+    }
+
+    if (not listed)
         return s.fail("out of memory");
 
     if (auto ret = s.start(); ret.has_error())
@@ -393,6 +533,8 @@ bool session::restart() noexcept
     if (auto ret = m_impl->start(); ret.has_error())
         return m_impl->fail_step(ret.error());
 
+    // After the start: the events of the previous run are not for the game.
+    m_impl->discard_events();
     return true;
 }
 
@@ -416,12 +558,16 @@ bool session::advance_until(double                   target,
 
     s.discard_logs();
     const bool commands_ok = s.apply_commands();
+    const bool watches_ok  = s.sync_watches();
 
-    if (auto ret = s.player->advance_until(target, budget); ret.has_error())
+    const auto ret = s.player->advance_until(target, budget);
+    s.publish_events();
+
+    if (ret.has_error())
         return s.fail_step(ret.error());
 
     s.sync_state();
-    return commands_ok;
+    return commands_ok and watches_ok;
 }
 
 bool session::run_to_end() noexcept
@@ -448,7 +594,13 @@ bool session::run_to_end() noexcept
         if (not s.apply_commands())
             commands_ok = false;
 
-        if (auto ret = s.player->advance(run_slice); ret.has_error())
+        if (not s.sync_watches())
+            commands_ok = false;
+
+        const auto ret = s.player->advance(run_slice);
+        s.publish_events();
+
+        if (ret.has_error())
             return s.fail_step(ret.error());
 
         s.sync_state();
@@ -555,6 +707,76 @@ double session::observer_value(int index) const noexcept
     const auto* obs = m_impl->pj->sim.observers.try_to_get(id);
 
     return obs ? obs->last_value() : 0.0;
+}
+
+int session::output_count() const noexcept
+{
+    return m_impl ? static_cast<int>(m_impl->outputs.size()) : 0;
+}
+
+std::string_view session::output_name(int index) const noexcept
+{
+    if (not m_impl or index < 0 or index >= output_count())
+        return {};
+
+    return m_impl->outputs[index].name.sv();
+}
+
+int session::find_output(std::string_view name) const noexcept
+{
+    for (int i = 0, e = output_count(); i < e; ++i)
+        if (m_impl->outputs[i].name.sv() == name)
+            return i;
+
+    return -1;
+}
+
+bool session::watch_output(int index, bool enable) noexcept
+{
+    if (not m_impl)
+        return false;
+
+    std::scoped_lock lock(m_impl->events_mutex);
+
+    if (index < 0 or index >= static_cast<int>(m_impl->outputs.size()))
+        return false;
+
+    m_impl->outputs[index].wanted = enable;
+    return true;
+}
+
+std::size_t session::take_events(std::span<output_event> out) noexcept
+{
+    if (not m_impl or out.empty())
+        return 0;
+
+    auto&            s = *m_impl;
+    std::scoped_lock lock(s.events_mutex);
+
+    const auto n = std::min(out.size(), s.events.size() - s.events_head);
+    std::copy_n(s.events.begin() + s.events_head, n, out.begin());
+    s.events_head += n;
+
+    if (s.events_head == s.events.size()) {
+        s.events.clear();
+        s.events_head = 0;
+    }
+
+    return n;
+}
+
+void session::set_event_capacity(std::size_t capacity) noexcept
+{
+    if (not m_impl)
+        return;
+
+    std::scoped_lock lock(m_impl->events_mutex);
+    m_impl->event_capacity = std::max<std::size_t>(capacity, 1);
+}
+
+std::uint64_t session::dropped_events() const noexcept
+{
+    return m_impl ? m_impl->dropped.load() : 0;
 }
 
 std::string_view session::last_error() const noexcept
