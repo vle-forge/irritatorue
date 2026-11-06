@@ -8,6 +8,7 @@
 
 #include "Async/TaskGraphInterfaces.h"
 #include "Engine/World.h"
+#include "HAL/FileManager.h"
 #include "HAL/PlatformProcess.h"
 #include "Interfaces/IPluginManager.h"
 #include "Misc/AutomationTest.h"
@@ -172,6 +173,61 @@ bool FIrritatorSessionInputTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("advance after the error"), Session.advance_until(2.0, 1s));
     TestEqual(TEXT("x with the first slope"), Session.observer_value(0), 2.0, 0.05);
 
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FIrritatorSessionJournalTest, "Irritator.Session.Journal", TestFlags)
+
+bool FIrritatorSessionJournalTest::RunTest(const FString& Parameters)
+{
+    using namespace std::chrono_literals;
+
+    irtue::session Session;
+    if (not LoadFixture(*this, Session))
+        return false;
+
+    const int One = Session.find_input("one");
+
+    // X' = 1 to the date 5, then X' = 2: X(10) = 15.
+    TestTrue(TEXT("advance to 5"), Session.advance_until(5.0, 1s));
+    TestTrue(TEXT("send"), Session.send_value(One, 2.0));
+    TestTrue(TEXT("advance to 10"), Session.advance_until(10.0, 1s));
+    TestEqual(TEXT("game"), Session.observer_value(0), 15.0, 0.05);
+
+    // The replay sends 2 again at the date 5, not before.
+    TestTrue(TEXT("replay"), Session.replay());
+    TestTrue(TEXT("loaded"), Session.state() == irtue::session_state::loaded);
+    TestEqual(TEXT("time of the replay"), Session.current_time(), 0.0);
+
+    bool bInTime = true;
+    for (int i = 1; i <= 20; ++i) {
+        TestTrue(TEXT("advance the replay"), Session.advance_until(0.5 * i, 1s));
+        bInTime = bInTime and Session.current_time() <= 0.5 * i + 1e-9;
+    }
+    TestTrue(TEXT("the clock follows the targets"), bInTime);
+    TestEqual(TEXT("replayed"), Session.observer_value(0), 15.0, 0.05);
+
+    // The journal in a file, replayed by another session.
+    const FString Journal = FPaths::ConvertRelativePathToFull(FPaths::ProjectSavedDir() / TEXT("irtue-journal-test.irj"));
+    TestTrue(TEXT("save"), Session.save_journal(ToUtf8(Journal)));
+
+    {
+        irtue::session Other;
+        if (LoadFixture(*this, Other)) {
+            TestTrue(TEXT("load the journal"), Other.load_journal(ToUtf8(Journal)));
+            TestTrue(TEXT("advance the other"), Other.advance_until(10.0, 1s));
+            TestEqual(TEXT("replayed from the file"), Other.observer_value(0), 15.0, 0.05);
+        }
+
+        TestFalse(TEXT("missing journal"), Other.load_journal(ToUtf8(Journal + TEXT(".missing"))));
+    }
+
+    // A new game forgets the journal.
+    TestTrue(TEXT("restart"), Session.restart());
+    TestTrue(TEXT("advance the new game"), Session.advance_until(10.0, 1s));
+    TestEqual(TEXT("new game"), Session.observer_value(0), 10.0, 0.05);
+
+    IFileManager::Get().Delete(*Journal);
     return true;
 }
 
